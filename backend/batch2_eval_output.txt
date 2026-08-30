@@ -1,0 +1,8 @@
+LLM call failed for VisualizationSpec (attempt 1/2): 1 validation error for VisualizationSpec
+type
+  Input should be 'flow', 'array', 'comparison', 'node', 'metric' or 'question' [type=literal_error, input_value='linked-list', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/literal_error
+LLM call failed for VisualizationSpec (attempt 2/2): 1 validation error for VisualizationSpec
+type
+  Input should be 'flow', 'array', 'comparison', 'node', 'metric' or 'question' [type=literal_error, input_value='linked-list', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/literal_error

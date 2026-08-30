@@ -1,0 +1,108 @@
+
+=======================================================
+ RUNNING PIPELINE: Case A: Correct, well-reasoned answer
+=======================================================
+Student Answer: "A hash map stores values we have already seen. As we scan, we can check if the complement (target - current_value) is already in the map in O(1) average time. This avoids double looping, making it O(N) average time instead of O(N^2) brute force."
+
+Running Evaluation Agent...
+  Passed: True
+  Score: 1.0
+  Reasoning Quality: Excellent – the answer clearly explains that the hash map stores previously seen values, checks the complement in O(1) average time, and therefore replaces the quadratic double loop with a linear scan, yielding O(N) average complexity.
+  Misconceptions Detected: []
+  Feedback: Your explanation is spot‑on and aligns perfectly with the key concepts. No misconceptions were detected. Keep up the clear reasoning!
+
+Running Adaptation Agent...
+  Action: continue
+  Rationale/Message: Excellent work! Your explanation clearly shows you understand how the hash‑map lookup replaces the quadratic brute‑force scan, giving an O(N) average solution.
+  Next Step: completed
+  Difficulty: moderate
+
+=======================================================
+ RUNNING PIPELINE: Case B: HashMap sorts data misconception
+=======================================================
+Student Answer: "HashMaps are faster because they sort the array when inserting. Once it's sorted, we can search it in O(1) time using binary search."
+
+Running Evaluation Agent...
+  Passed: False
+  Score: 0.0
+  Reasoning Quality: The answer shows a superficial guess with no correct justification; it incorrectly claims HashMaps sort data and enable O(1) binary search, reflecting a misunderstanding of hash map lookup semantics.
+  Misconceptions Detected: ['HashMap sorts data']
+  Feedback: HashMaps do not sort the array. They provide average O(1) lookup by hashing keys, which is why the two‑sum algorithm becomes O(N) on average. Binary search requires a sorted structure and runs in O(log N), not O(1). Review how hash table insertion and lookup work and why this replaces the linear scan in the brute‑force solution.
+
+Running Adaptation Agent...
+  Action: flag_misconception
+  Rationale/Message: You still think a HashMap sorts the data. Remember, a hash map only provides fast key‑value lookup—it doesn’t order the elements.
+  Next Step: visualize
+  Difficulty: easy
+
+=======================================================
+ RUNNING PIPELINE: Case C: Vague/uncertain answer
+=======================================================
+Student Answer: "I think it is faster because it does some hashing lookup, but I am not really sure how it computes the index or why it is O(1) instead of searching."
+
+Running Evaluation Agent...
+  Passed: False
+  Score: 0.5
+  Reasoning Quality: The answer shows a superficial grasp: it notes that hashing makes the algorithm faster but admits no understanding of how hash indices are computed or why lookups are O(1). No concrete reasoning or reference to storing seen values and checking target‑current is provided.
+  Misconceptions Detected: ['HashMap is magic']
+  Feedback: You correctly identified that using a hash map speeds up the search, but you need to explain *why* the lookup is constant‑time on average. Describe how a hash function maps values to buckets, how collisions are handled, and how the algorithm stores each value and checks for the complement (target‑current) in O(1) average time. This will demonstrate a solid grasp of the underlying lookup semantics.
+
+Running Adaptation Agent...
+  Action: flag_misconception
+  Rationale/Message: You still think the HashMap works like magic. Let’s clear that up by explaining how a hash function maps keys to buckets, how collisions are handled, and why lookups are O(1) on average, so you can see exactly why the Two‑Sum hash‑map solution is fast.
+  Next Step: visualize
+  Difficulty: moderate
+
+=======================================================
+ RUNNING PIPELINE: Case D: Plausible-sounding wrong answer (Hashing target sum)
+=======================================================
+Student Answer: "HashMaps are fast because they use a hashing function to map the target sum to a specific index, allowing us to find the two numbers in O(1) time."
+
+Running Evaluation Agent...
+  Passed: False
+  Score: 0.3
+  Reasoning Quality: The answer shows a superficial understanding and misapplies the hash‑map concept, claiming the target sum is hashed instead of storing elements and checking complements. No correct reasoning about constant‑time lookup of complements is provided.
+  Misconceptions Detected: ['Hashing target sum instead of elements', 'HashMap is magic']
+  Feedback: Your explanation mixes up what is stored in the hash map. The hash map should store each array element (or its index) and you check whether the complement (target‑value minus current element) is already present. Hashing the target sum itself does not give you the two numbers. Review how the two‑sum hash‑map solution works and why the lookup is O(1) for the complement, not the target.
+
+Running Adaptation Agent...
+  Action: flag_misconception
+  Rationale/Message: You’re still storing the target sum in the hash map instead of the array elements, and thinking the map magically finds the pair. Let’s fix that misunderstanding by reviewing how the hashmap stores each element and looks up the complement (target‑value minus current element).
+  Next Step: visualize
+  Difficulty: easy
+
+=======================================================
+ RUNNING BASELINE DIRECT LLM CALL ON: Case B (HashMap sorts data)
+=======================================================
+Student Answer: "HashMaps are faster because they sort the array when inserting. Once it's sorted, we can search it in O(1) time using binary search."
+Direct LLM call with model openai/gpt-oss-120b...
+
+Baseline Response:
+**1. Correct?** No  
+
+**2. Score:** 0.2  
+
+**3. Misconceptions detected**
+- Believes a HashMap “sorts the array” when inserting.  
+- Claims you can then use binary search in **O(1)** time (binary search is O(log n), and it requires a sorted structure, not a hash table).  
+- Confuses the constant‑time average lookup of a hash table with binary search.  
+
+**4. Brief feedback**  
+A HashMap speeds up the Two‑Sum problem because it lets you store each value as a key and retrieve its index in average O(1) time via hashing, without any sorting. You simply check for the complement (`target‑value`) as you iterate. Binary search is unrelated here and is O(log n), not O(1). Review how hash tables work versus sorted arrays and binary search.
+
+=======================================================
+ RUNNING BASELINE DIRECT LLM CALL ON: Case D (Hashing target sum)
+=======================================================
+Student Answer: "HashMaps are fast because they use a hashing function to map the target sum to a specific index, allowing us to find the two numbers in O(1) time."
+Direct LLM call with model openai/gpt-oss-120b...
+
+Baseline Response:
+1. **Correct?** No  
+2. **Score:** 0.4  
+3. **Misconceptions detected**  
+   - Suggests the hash function maps the *target sum* to an index (hash maps store the individual numbers, not the target).  
+   - Implies the entire Two‑Sum problem is solved in O(1) time; actually each lookup is O(1) but the overall algorithm runs in O(n).  
+   - Overlooks that the hash map is used to find the *complement* of the current number, not the two numbers directly.  
+
+4. **Brief feedback**  
+   Your answer shows you know hash maps give constant‑time lookups, but the explanation is inaccurate. In the Two‑Sum solution you insert each number (or its index) into the hash map, then for each element you check in O(1) whether its complement (target − current) is already in the map. This yields an overall O(n) algorithm, not O(1). Revise the description to focus on storing numbers and looking up complements.
