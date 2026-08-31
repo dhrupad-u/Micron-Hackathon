@@ -43,9 +43,14 @@ SceneActorKind = Literal[
     "chip", "meter", "lane", "creature", "stack",
 ]
 
+SceneRenderer = Literal[
+    "emoji-scene", "graph", "diagram", "image-overlay", "flow", "comparison",
+]
+
 SceneAction = Literal[
     "appear", "disappear", "move", "pulse", "shake", "split", "merge",
     "fill", "increment", "highlight", "dim", "connect", "emit",
+    "draw_curve", "shift_curve", "draw_point", "move_point", "highlight_point", "add_annotation",
 ]
 
 
@@ -74,14 +79,25 @@ class SceneEffect(BaseModel):
 
 class SceneStep(BaseModel):
     id: str
+    # One short sentence shown as the step headline (max ~110 chars)
     caption: str
+    # 1-2 sentences explaining WHY this happens / what it proves (shown under the caption)
+    narration: str = ""
     effects: List[SceneEffect] = Field(default_factory=list)
 
 
 class SceneScript(BaseModel):
     background: str = "default"
+    renderer: SceneRenderer = "emoji-scene"
+    # One sentence: what problem/question is this animation answering?
+    problem: str = ""
+    # One sentence: what should the student watch for / what does success look like?
+    goal: str = ""
+    # One sentence: the conclusion the student should walk away with (the answer/result).
+    takeaway: str = ""
     actors: List[SceneActor] = Field(default_factory=list)
     steps: List[SceneStep] = Field(default_factory=list)
+    graph_data: Optional[Dict[str, Any]] = None
 
 
 class VisualizationRelation(BaseModel):
@@ -124,8 +140,14 @@ class VisualizationSpec(BaseModel):
     transitions: List[VisualizationTransition] = Field(default_factory=list)
     questions: List[VisualizationQuestion] = Field(default_factory=list)
     expectedObservations: List[str] = Field(default_factory=list)
+    renderer: SceneRenderer = "emoji-scene"
     # Rich per-topic animated scene (interpreted by the frontend scene engine).
     scene: Optional[SceneScript] = None
+
+
+class VisualizationClassifier(BaseModel):
+    renderer: SceneRenderer = "emoji-scene"
+    reasoning: str = ""
 
 
 class DiagnosticReport(BaseModel):

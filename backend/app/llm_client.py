@@ -79,8 +79,8 @@ def call_structured_llm(
         providers.append({
             "key": gemini_key,
             "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-            "model": model or "gemini-2.5-flash",
-            "name": "Gemini/gemini-2.5-flash",
+            "model": model or "gemini-3.6-flash",
+            "name": "Gemini/gemini-3.6-flash",
         })
 
     if xai_key:
@@ -104,10 +104,12 @@ def call_structured_llm(
         return fallback()
 
     schema = response_model.model_json_schema()
+    # Compact JSON keeps the injected schema small — pretty-printing can add
+    # thousands of tokens, which trips per-request limits (e.g. Groq 8k TPM).
     system_msg = (
         f"{system_prompt}\n\n"
         f"Respond ONLY with a valid JSON object matching this schema (no markdown, no code fences):\n"
-        f"{json.dumps(schema, indent=2)}"
+        f"{json.dumps(schema, separators=(',', ':'))}"
     )
 
     try:

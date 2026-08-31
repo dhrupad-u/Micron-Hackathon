@@ -24,6 +24,7 @@ from .schemas import (
     SceneStep,
     StudentSession,
     TopicBlueprint,
+    VisualizationClassifier,
     VisualizationEntity,
     VisualizationQuestion,
     VisualizationRelation,
@@ -50,7 +51,7 @@ def _topic_synthesis_fallback(topic_request: str) -> TopicBlueprint:
         ch if ch.isalnum() else "-" for ch in topic.lower()
     ).strip("-")[:40]
     title = topic if len(topic) <= 80 else topic[:77] + "..."
-    return TopicBlueprint(
+    _tf = TopicBlueprint(
         concept_id=slug,
         title=title,
         domain="Custom",
@@ -98,45 +99,54 @@ def _topic_synthesis_fallback(topic_request: str) -> TopicBlueprint:
         example_values=["start", "process", "result"],
         example_walkthrough=f"Step 1: Identify starting values. Step 2: Apply transformation rules. Step 3: Verify the outcome.",
         practice_challenge=f"In your own words, explain how {title} works and describe a real situation where you would observe it.",
-        diagnostic_quiz=[
-            QuizQuestion(
-                question=f"What is the single most important idea behind {title}?",
-                options=[
-                    f"Inputs follow a logical rule to produce outputs",
-                    f"It only happens by random chance",
-                    f"It only applies to theoretical computer algorithms",
-                    f"It cannot be measured or observed",
-                ],
-                correct_index=0,
-                misconception_tag="randomness assumption",
-                explanation=f"{title} is governed by a deterministic, observable mechanism.",
-            ),
-            QuizQuestion(
-                question=f"When studying {title}, why is it crucial to look at step-by-step examples?",
-                options=[
-                    "Because memorizing names isn't enough to predict how it behaves",
-                    "Because step-by-step examples are only for beginners",
-                    "Because the order of steps never matters",
-                    "Because examples change the underlying definition",
-                ],
-                correct_index=0,
-                misconception_tag="superficial memorization",
-                explanation="Real understanding comes from tracing the step-by-step state changes.",
-            ),
-            QuizQuestion(
-                question=f"How would you explain {title} to someone who has never heard of it?",
-                options=[
-                    f"Focus on the main real-world analogy and how inputs become outputs",
-                    f"List 50 technical terms without context",
-                    f"Tell them it is too complex to understand",
-                    f"Skip the mechanism and only give a single formula",
-                ],
-                correct_index=0,
-                misconception_tag="overcomplication",
-                explanation="The best explanations build clear intuition using analogies before technical details.",
-            ),
-        ],
     )
+
+    # Topic-aware fallback quiz built from the blueprint's own facts/misconceptions.
+    facts = [f for f in _tf.key_facts]
+    myths = [m for m in _tf.misconceptions]
+    tokens = _tf.example_values
+    quiz = []
+    if facts and len(myths) >= 2:
+        opts = [facts[0], myths[0], myths[1], f"{title} has no cause-and-effect structure"]
+        quiz.append(QuizQuestion(
+            question=f"Which statement about {title} is actually TRUE?",
+            options=opts,
+            correct_index=0,
+            misconception_tag=myths[0][:60],
+            explanation=facts[0],
+        ))
+    if len(facts) > 1 and len(myths) >= 3:
+        opts = [facts[1], myths[2], "It works differently every time, with no rules", "Only experts can ever trace how it works"]
+        quiz.append(QuizQuestion(
+            question=f"Someone claims: '{myths[2] if len(myths) > 2 else myths[0]}' — what's the best response?",
+            options=opts,
+            correct_index=0,
+            misconception_tag=myths[2][:60] if len(myths) > 2 else myths[0][:60],
+            explanation=facts[1],
+        ))
+    if len(tokens) >= 3:
+        quiz.append(QuizQuestion(
+            question=f"In a concrete run of {title}, which stage follows '{tokens[0]}'?",
+            options=[tokens[1], tokens[2], tokens[0], "the process restarts from scratch"],
+            correct_index=0,
+            misconception_tag="sequence not understood",
+            explanation=f"The mechanism runs {tokens[0]} → {tokens[1]} → {tokens[2]}.",
+        ))
+    if len(quiz) < 3:
+        quiz.append(QuizQuestion(
+            question=f"What's the smartest way to actually understand {title}?",
+            options=[
+                "Trace one concrete example end to end",
+                "Memorize the definition word for word",
+                "Skip the mechanism and learn buzzwords",
+                "Assume it works like everything else",
+            ],
+            correct_index=0,
+            misconception_tag="memorization over mechanism",
+            explanation="Tracing a concrete example exposes the actual cause-and-effect chain.",
+        ))
+    _tf.diagnostic_quiz = quiz[:3]
+    return _tf
 
 
 def topic_synthesis_agent(topic_request: str, student_level: str = "beginner") -> TopicBlueprint:
@@ -163,7 +173,10 @@ def topic_synthesis_agent(topic_request: str, student_level: str = "beginner") -
         "  11. example_walkthrough: a concrete worked example with step-by-step numbers/labels.\n"
         "  12. practice_challenge: ONE open-ended prompt asking the student to explain the mechanism in their own words.\n"
         "  13. diagnostic_quiz: EXACTLY 3 highly valid, topic-specific multiple-choice warm-up questions. "
-        "Each question must test real domain intuitions for THIS specific topic (e.g. for Supply & Demand, test price adjustments when supply drops; for WiFi, test radio wave transmission). "
+        "Each question must test real domain intuitions for THIS specific topic (e.g. for Supply & Demand, test price adjustments when supply drops; for WiFi, test radio wave transmission; for black holes, test what happens to light near the event horizon). "
+        "Every question and option must mention concrete entities of the topic itself (objects, forces, steps, values). "
+        "FORBIDDEN: questions about 'inputs' and 'outputs' as abstract words, 'step 1 vs step 2', how the app works, or any meta/placeholder phrasing — those are instant failures. "
+        "Make at least one question a mini-scenario: 'If X happens, what does the topic predict?' "
         "Provide 4 plausible options, correct_index (0-3), misconception_tag, and a 1-sentence explanation."
     )
     user_prompt = json.dumps({
@@ -560,105 +573,628 @@ _SCENE_KINDS = (
 )
 
 
-def _scene_rules(step_range: str) -> str:
-    return (
+def _visualization_classifier(topic_title: str, concept_text: str) -> VisualizationClassifier:
+    system_prompt = (
+        "You are a visualization-type classifier for an adaptive learning system. "
+        "Given a topic and its concept description, choose the best visualization renderer.\n"
+        "RENDERERS:\n"
+        "  - emoji-scene: algorithms, processes, sequences, step-by-step procedures, code flows. "
+        "Actors move on a grid with emoji icons. Best for: sorting, searching, data structures, programming, cooking recipes, manufacturing steps.\n"
+        "  - graph: quantitative relationships with axes, curves, or data trends. Best for: economics (supply/demand), physics (motion/forces), math (functions), chemistry (reaction rates), biology (population growth), any topic with 'X vs Y' or equilibrium.\n"
+        "  - diagram: structural or hierarchical concepts with labeled parts and connections. Best for: biology (cell structure), chemistry (molecular structure), history (causes/effects), systems (org charts, networks), anatomy, geography.\n"
+        "  - image-overlay: real-world phenomena best shown with a photo + animated labels. Best for: geography (earthquakes), medicine (surgery), astronomy (planets), mechanics (engines), anything spatial or physical.\n"
+        "Output renderer and a 1-sentence reasoning."
+    )
+    user_prompt = json.dumps({
+        "topic": topic_title,
+        "concept_description": concept_text[:400] if concept_text else topic_title,
+        "output_type": "VisualizationClassifier",
+    })
+    def _fallback() -> VisualizationClassifier:
+        topic_lower = (topic_title or "").lower()
+        if any(k in topic_lower for k in ["supply", "demand", "economics", "market", "price", "curve", "equilibrium"]):
+            return VisualizationClassifier(renderer="graph", reasoning="Quantitative curves/axes detected")
+        if any(k in topic_lower for k in ["cell", "molecule", "anatomy", "biology", "chemistry", "structure"]):
+            return VisualizationClassifier(renderer="diagram", reasoning="Structural diagram detected")
+        return VisualizationClassifier(renderer="emoji-scene", reasoning="Default process/sequence")
+    try:
+        return call_structured_llm(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_model=VisualizationClassifier,
+            fallback=_fallback,
+        )
+    except Exception:
+        return _fallback()
+
+
+def _scene_rules(step_range: str, renderer: str = "emoji-scene") -> str:
+    base = (
         "SCENE RULES — the required 'scene' field (this drives the animated visual the student watches):\n"
-        "  CRITICAL — This is an EDUCATIONAL animation. Every step must teach something, not just move things around.\n"
-        "  - scene.background: a one-word theme for the backdrop: 'sky', 'lab', 'grid', 'nature', 'space', or 'default'.\n"
-        "  - scene.actors: 3 to 8 actors. Each actor represents a MEANINGFUL part of the concept — not a generic placeholder.\n"
+        "  CRITICAL — This is an EDUCATIONAL animation. A student watching ONLY this animation must understand:\n"
+        "  1) what is being shown, 2) the key mechanism/insight, 3) the final concrete result.\n"
+        "  FRAMING (all three required):\n"
+        "    - scene.problem: ONE sentence stating the concrete problem with real values.\n"
+        "    - scene.goal: ONE sentence telling the student what to watch for.\n"
+        "    - scene.takeaway: ONE sentence with the concrete final result.\n"
+        "  - scene.background: a one-word theme: 'sky', 'lab', 'grid', 'nature', 'space', or 'default'.\n"
+    )
+
+    if renderer == "graph":
+        return base + (
+            "  RENDERER: 'graph' — axes + curves + points + annotations.\n"
+            "  You MUST populate 'graph_data' with this exact structure:\n"
+            "    graph_data = {\n"
+            "      x_axis: string, y_axis: string, x_range: [number, number], y_range: [number, number],\n"
+            "      curves: [{ id, type: 'supply'|'demand'|'line'|'curve', label, points: [[x,y],...], color: '#hex' }],\n"
+            "      equilibria: [{ id, x, y, label, color, visible_from_step, visible_to_step }],\n"
+            "      annotations: [{ text, x, y, step, color }]\n"
+            "    }\n"
+            "  RULES: Points must use the SAME coordinate space as x_range/y_range. "
+            "Use clear colors (#1cb0f6, #22c55e, #ef4444, #f59e0b). "
+            "Supply/demand: use type='supply' or 'demand'. Equilibrium points mark where curves cross. "
+            "Annotations appear at specific steps to explain shifts.\n"
+            "  scene.actors: 4-8 actors labeling axes, curves, and key points (not data points themselves).\n"
+            "  scene.steps: " + step_range + ". Each step has:\n"
+            "    * caption: ONE short sentence (max 110 chars) with real values.\n"
+            "    * narration: 1-2 sentences explaining WHY.\n"
+            "    * effects: use 'highlight', 'dim', 'pulse' on curve/axis actors. Do NOT use 'move' for curve data — curve movement is handled by graph_data visibility and annotations.\n"
+            "  FORBIDDEN: abstract labels like 'input 1', 'step 1', 'process'. Every label must name a REAL entity in this topic.\n"
+        )
+
+    if renderer == "diagram":
+        return base + (
+            "  RENDERER: 'diagram' — labeled structural components with connections.\n"
+            "  scene.actors: 4-8 actors representing REAL PARTS of this topic. "
+            "Use kind='node' for major components, kind='box' for sub-parts, kind='arrow' for connectors. "
+            "Labels must be the ACTUAL names from this domain (e.g. 'Mitochondria', 'French Revolution', 'HTTP').\n"
+            "  scene.steps: " + step_range + ". Each step has:\n"
+            "    * caption: ONE short sentence stating WHAT changes.\n"
+            "    * narration: 1-2 sentences explaining the mechanism.\n"
+            "    * effects: use 'appear', 'highlight', 'connect', 'pulse', 'dim'. "
+            "'connect' links two actors with a dashed line to show relationship.\n"
+            "  Step 0 = all parts appear labeled. Final step = the full mechanism is shown and highlighted.\n"
+            "  FORBIDDEN: generic labels like 'part A', 'component 1', 'stage 1'. Use real domain terminology.\n"
+        )
+
+    if renderer == "image-overlay":
+        return base + (
+            "  RENDERER: 'image-overlay' — base image with animated labels/annotations.\n"
+            "  scene.actors: 3-6 actors representing LABELS/ANNOTATIONS that will appear over an image. "
+            "Use kind='chip' or 'box' for labels, kind='arrow' for pointing indicators. "
+            "Labels must be SHORT (max 20 chars) and SPECIFIC to the concept.\n"
+            "  scene.steps: " + step_range + ". Each step has:\n"
+            "    * caption: ONE short sentence about what the annotation explains.\n"
+            "    * narration: 1-2 sentences connecting the label to the mechanism.\n"
+            "    * effects: use 'appear', 'move', 'highlight', 'pulse' to place labels on the image.\n"
+            "  Step 0 = initial labels appear. Final step = all key features are labeled and the takeaway is proven.\n"
+            "  NOTE: The base image is generated separately. Your actors are OVERLAYS only.\n"
+            "  FORBIDDEN: generic labels like 'area 1', 'part A'. Use real feature names.\n"
+        )
+
+    # Default: emoji-scene
+    return base + (
+        "  RENDERER: 'emoji-scene' — actors on a percentage grid with emoji/icons.\n"
+        "  scene.actors: 3 to 8 actors. Each actor is a MEANINGFUL part of THIS concept — never a decorative placeholder.\n"
         "    Actor fields: id (kebab-case), kind from " + _SCENE_KINDS + "; "
-        "a SHORT label (max 12 chars) that names its ROLE in this specific concept; an emoji 'icon' relevant to the concept; "
-        "x and y on a 0-100 percentage grid (y=10 is top, y=90 is bottom; keep x within 12-88, y within 15-85); "
-        "optional 'value' (number) for counters/meters.\n"
-        "  ACTOR DESIGN RULES:\n"
-        "    * Name actors after their ROLE, not generic names. For Supply/Demand: name actors 'Buyer 💰', 'Seller 🏭', 'Price 📈'.\n"
-        "    * For algorithmic problems: name actors after their data structure role ('Hash Map 🗂️', 'Current Num 🔍', 'Target ✅').\n"
-        "    * Use 'box' kind for data/values, 'counter' for counts/quantities, 'meter' for progress/percentage, 'node' for concepts.\n"
-        "  - scene.steps: " + step_range + ". STEP STRUCTURE:\n"
-        "    * Step 0 (INTRO): Caption MUST state the problem: 'Problem: Given [input], find [goal].' Show all actors appearing.\n"
-        "    * Middle steps: Each caption MUST say WHAT is changing AND WHY. E.g. 'Checking if 7 is in hash map — it IS, so we found our pair!'\n"
-        "    * Final step (CONCLUSION): Caption MUST state the outcome: 'Answer: [specific result]. This took [O(n)] time.'\n"
-        "    * Caption format: 'Step N: [specific action with real values from the example] → [what this reveals/proves]'.\n"
+        "a SHORT label (max 12 chars) naming its ROLE in this specific concept; an emoji 'icon' relevant to the concept; "
+        "x and y on a 0-100 percentage grid (y=10 top, y=90 bottom; keep x within 12-88, y within 15-85); "
+        "optional 'value' (number) for counters/meters. Data actors (boxes/chips) must carry the REAL example values as labels.\n"
+        "  - scene.steps: " + step_range + ". Each step has:\n"
+        "    * caption: ONE short sentence (max 110 chars) stating WHAT changes, with real values.\n"
+        "    * narration: 1-2 sentences explaining WHY this happens and what it proves.\n"
+        "    * effects: 1-4 effects that MUTATE the stage (move actors, fill labels, increment counters, highlight the actor the caption talks about).\n"
+        "    * Step 0 = the problem setup (actors with real input values appear). Final step = the outcome (the answer actor/result is highlighted, takeaway proven on stage).\n"
         "  - Each effect: 'actor' (an actor id), 'action' from " + _SCENE_ACTIONS + "; for 'move' set to_x/to_y (0-100);\n"
         "for 'split'/'merge'/'connect'/'emit' set 'target' to the partner actor id; 'label'/'value' update the actor's text/number.\n"
-        "  - CRITICAL: The animation must tell a STORY about the concept. A student watching with no other context should understand:\n"
-        "    1) What problem is being solved 2) The key mechanism/insight 3) The final answer or outcome.\n"
-        "  - Use 'fill' effects with specific values from the example (e.g., fill a box with '9-2=7'), not generic 'step 1' text.\n"
+        "  FORBIDDEN: captions or labels like 'step 1', 'input 1', 'input 2', 'process', 'something changes' — every caption must be about THIS topic's real content.\n"
     )
 
 
-def _fallback_scene(session: StudentSession, naive: bool = False) -> SceneScript:
-    """Deterministic scene: input row + scanner + counters, animated across the example values."""
+_CURATED_EXAMPLES = {
+    "two-sum-hashmap": "nums=[2,7,11,15], target=9",
+    "contains-duplicate": "nums=[1,2,3,1]",
+    "valid-anagram": "s='anagram', t='nagaram'",
+    "best-time-stock": "prices=[7,1,5,3,6,4]",
+    "max-subarray": "nums=[-2,1,-3,4,-1,2,1,-5,4]",
+    "valid-parentheses": "s='([]){}'",
+    "reverse-linked-list": "head=[1,2,3,4,5]",
+    "group-anagrams": "strs=['eat','tea','tan','ate','nat','bat']",
+    "product-except-self": "nums=[1,2,3,4]",
+    "top-k-frequent": "nums=[1,1,1,2,2,3], k=2",
+    "longest-consecutive": "nums=[100,4,200,1,3,2]",
+}
+
+
+def _two_sum_scene(naive: bool) -> SceneScript:
+    """Hand-crafted, genuinely explanatory scene for the flagship demo topic."""
+    values = ["2", "7", "11", "15"]
+    n = len(values)
+    x0 = 20.0
+    actors = [
+        SceneActor(id=f"box-{i}", kind="box", label=v, x=x0 + i * 17, y=32)
+        for i, v in enumerate(values)
+    ]
+    actors.append(SceneActor(id="target", kind="chip", label="target = 9", icon="🎯", x=84, y=18))
+    actors.append(SceneActor(id="scanner", kind="arrow", label="current", icon="👇", x=x0, y=50))
+    if naive:
+        actors.append(SceneActor(id="pairs", kind="counter", label="comparisons", icon="🔁", value=0, x=50, y=78))
+        steps = [
+            SceneStep(
+                id="s0", caption="Problem: find two numbers here that add up to 9.",
+                narration="The brute-force idea is simple: try every possible pair and check its sum. Correct — but how much work is it?",
+                effects=[SceneEffect(actor=f"box-{i}", action="appear") for i in range(n)]
+                + [SceneEffect(actor="target", action="appear"), SceneEffect(actor="scanner", action="appear")],
+            ),
+        ]
+        comparisons = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                comparisons += 1
+                steps.append(SceneStep(
+                    id=f"s-{i}-{j}",
+                    caption=f"Compare {values[i]} + {values[j]} = {int(values[i]) + int(values[j])}"
+                    + ("  ✅ found it!" if int(values[i]) + int(values[j]) == 9 else " — not 9."),
+                    narration=(
+                        f"This single check costs one comparison. With n numbers there are n·(n−1)/2 ≈ {n * (n - 1) // 2} "
+                        "such pairs — that's O(n²): the work explodes as the array grows."
+                        if int(values[i]) + int(values[j]) == 9
+                        else f"No match, so we try the next pair. Each 'no' still costs a full comparison — brute force pays for every guess."
+                    ),
+                    effects=[SceneEffect(actor="scanner", action="move", to_x=x0 + i * 17, to_y=50)]
+                    + [SceneEffect(actor=f"box-{i}", action="highlight"), SceneEffect(actor=f"box-{j}", action="highlight"),
+                       SceneEffect(actor="pairs", action="increment", value=comparisons)],
+                ))
+        steps.append(SceneStep(
+            id="s-end", caption=f"Done: {comparisons} comparisons to be sure. That's O(n²).",
+            narration="Imagine a million numbers — a trillion comparisons. We can do much better.",
+            effects=[SceneEffect(actor="pairs", action="pulse")],
+        ))
+        return SceneScript(
+            background="grid",
+            problem="Find two numbers in [2, 7, 11, 15] that add up to 9.",
+            goal="Watch the comparison counter — brute force pays for every pair it tries.",
+            takeaway="Brute force needed 6 comparisons for 4 numbers: correct, but O(n²) — it doesn't scale.",
+            actors=actors, steps=steps,
+        )
+
+    # Optimized: hash map one-pass
+    actors.append(SceneActor(id="map", kind="node", label="hash map", icon="🗂️", x=22, y=74))
+    actors.append(SceneActor(id="chip-0", kind="chip", label="", icon="", x=48, y=74))
+    actors.append(SceneActor(id="chip-1", kind="chip", label="", icon="", x=62, y=74))
+    actors.append(SceneActor(id="answer", kind="counter", label="pair found", icon="✅", value=0, x=84, y=74))
+    seen = ["2", "7", "11", "15"]
+    steps = [
+        SceneStep(
+            id="s0", caption="Problem: find two numbers that add up to 9 — in ONE pass.",
+            narration="The trick: as we visit each number, we ask 'have I already seen its partner (9 − current)?' The hash map answers in O(1) average time.",
+            effects=[SceneEffect(actor=f"box-{i}", action="appear") for i in range(n)]
+            + [SceneEffect(actor="target", action="appear"), SceneEffect(actor="scanner", action="appear"),
+               SceneEffect(actor="map", action="appear"), SceneEffect(actor="answer", action="appear")],
+        ),
+    ]
+    # trace: 2 (need 7, store 2) → 7 (need 2, FOUND)
+    steps.append(SceneStep(
+        id="s1", caption="Take 2: is its partner 9−2=7 in the map? Not yet.",
+        narration="The map only contains what we've already walked past. 7 isn't there — so we remember 2 and move on. No sorting, no comparing with every other element.",
+        effects=[SceneEffect(actor="scanner", action="move", to_x=x0, to_y=50), SceneEffect(actor="box-0", action="highlight"),
+                 SceneEffect(actor="map", action="pulse"), SceneEffect(actor="chip-0", action="appear", label="2")],
+    ))
+    steps.append(SceneStep(
+        id="s2", caption="Take 7: is its partner 9−7=2 in the map? YES!",
+        narration="Instead of re-scanning the array for 2, one direct map lookup proves 2 was seen before. That single lookup replaces an entire nested loop — this is the whole insight.",
+        effects=[SceneEffect(actor="scanner", action="move", to_x=x0 + 17, to_y=50), SceneEffect(actor="box-1", action="highlight"),
+                 SceneEffect(actor="chip-0", action="pulse"), SceneEffect(actor="answer", action="increment", value=1)],
+    ))
+    steps.append(SceneStep(
+        id="s3", caption="Answer: 2 + 7 = 9, found in 2 steps, not 6.",
+        narration="We never touched 11 or 15. One pass, one small map: O(n) average time, O(n) extra space — memory buys speed.",
+        effects=[SceneEffect(actor="answer", action="pulse"), SceneEffect(actor="chip-1", action="appear", label="done")],
+    ))
+    return SceneScript(
+        background="grid",
+        problem="Find two numbers in [2, 7, 11, 15] that add up to 9 — but in a single pass.",
+        goal="Watch the hash map: it remembers every number already seen, so each partner check is instant.",
+        takeaway="Answer: 2 + 7 = 9 at indices 0 and 1 — one pass, O(n) average time. The map never sorts anything; it just remembers.",
+        actors=actors, steps=steps,
+    )
+
+
+def _supply_demand_scene() -> SceneScript:
+    supply_points = [(10, 8), (25, 5), (40, 3), (55, 1.5)]
+    demand_points = [(10, 1), (25, 3), (40, 5), (55, 8)]
+    shifted_supply = [(20, 8), (35, 5), (50, 3), (65, 1.5)]
+
+    actors = [
+        SceneActor(id="x-axis", kind="arrow", label="Quantity", icon="", x=50, y=90),
+        SceneActor(id="y-axis", kind="arrow", label="Price ($)", icon="", x=12, y=50),
+        SceneActor(id="d-curve", kind="node", label="Demand", icon="📉", x=65, y=22),
+        SceneActor(id="s1-curve", kind="node", label="Supply", icon="📈", x=28, y=68),
+        SceneActor(id="s2-curve", kind="node", label="Supply (shifted)", icon="📈", x=28, y=68),
+        SceneActor(id="e1", kind="token", label="E1: $3, 40 units", icon="🔵", x=50, y=50),
+        SceneActor(id="e2", kind="token", label="E2: $5, 25 units", icon="🔴", x=38, y=42),
+        SceneActor(id="price-tag", kind="chip", label="", icon="", x=50, y=18),
+    ]
+
+    steps = [
+        SceneStep(
+            id="s0",
+            caption="Market starts at equilibrium E1: price $3, quantity 40.",
+            narration="Supply and demand curves cross where the market clears — every orange for sale finds a buyer at $3.",
+            effects=[
+                SceneEffect(actor="x-axis", action="appear"),
+                SceneEffect(actor="y-axis", action="appear"),
+                SceneEffect(actor="d-curve", action="appear"),
+                SceneEffect(actor="s1-curve", action="appear"),
+                SceneEffect(actor="e1", action="appear"),
+                SceneEffect(actor="price-tag", action="fill", label="$3"),
+            ],
+        ),
+        SceneStep(
+            id="s1",
+            caption="Heatwave destroys crops → orange supply drops at every price.",
+            narration="Sellers now have fewer oranges to sell. The whole supply curve shifts left (or up): S1 becomes S2.",
+            effects=[
+                SceneEffect(actor="s1-curve", action="shift_curve", to_x=38, to_y=68, label="Supply (shifted)"),
+                SceneEffect(actor="s2-curve", action="appear"),
+                SceneEffect(actor="s1-curve", action="disappear"),
+            ],
+        ),
+        SceneStep(
+            id="s2",
+            caption="New intersection E2: price rises to $5, quantity falls to 25.",
+            narration="Scarcity bids up the price. At $5, only 25 oranges trade — the market clears again, but fewer people buy.",
+            effects=[
+                SceneEffect(actor="e2", action="appear"),
+                SceneEffect(actor="e1", action="dim"),
+                SceneEffect(actor="s2-curve", action="highlight"),
+                SceneEffect(actor="d-curve", action="highlight"),
+                SceneEffect(actor="e2", action="highlight"),
+                SceneEffect(actor="price-tag", action="fill", label="$5"),
+            ],
+        ),
+        SceneStep(
+            id="s3",
+            caption="Takeaway: a supply drop raises price and lowers quantity sold.",
+            narration="This is the core supply-demand mechanism: curve shifts change both price and quantity, not just one.",
+            effects=[
+                SceneEffect(actor="e2", action="pulse"),
+                SceneEffect(actor="price-tag", action="pulse"),
+            ],
+        ),
+    ]
+
+    return SceneScript(
+        renderer="graph",
+        background="grid",
+        problem="A heatwave reduces orange supply. What happens to price and quantity?",
+        goal="Watch the supply curve shift left and track the new equilibrium.",
+        takeaway="Supply drop → higher equilibrium price, lower quantity sold.",
+        actors=actors,
+        steps=steps,
+        graph_data={
+            "x_axis": "Quantity of Oranges",
+            "y_axis": "Price ($)",
+            "x_range": [0, 80],
+            "y_range": [0, 10],
+            "curves": [
+                {
+                    "id": "d-curve",
+                    "type": "demand",
+                    "label": "Demand (D)",
+                    "points": demand_points,
+                    "color": "#1cb0f6",
+                },
+                {
+                    "id": "s1-curve",
+                    "type": "supply",
+                    "label": "Supply (S1)",
+                    "points": supply_points,
+                    "color": "#22c55e",
+                },
+                {
+                    "id": "s2-curve",
+                    "type": "supply",
+                    "label": "Supply (S2)",
+                    "points": shifted_supply,
+                    "color": "#f59e0b",
+                    "visible_from_step": 2,
+                },
+            ],
+            "equilibria": [
+                {"id": "e1", "x": 40, "y": 3, "label": "E1", "color": "#3b82f6", "visible_from_step": 1, "visible_to_step": 2},
+                {"id": "e2", "x": 25, "y": 5, "label": "E2", "color": "#ef4444", "visible_from_step": 3},
+            ],
+            "annotations": [
+                {"text": "Supply shifts left", "x": 45, "y": 72, "step": 2, "color": "#f59e0b"},
+                {"text": "Price ↑", "x": 8, "y": 52, "step": 3, "color": "#ef4444"},
+                {"text": "Quantity ↓", "x": 18, "y": 85, "step": 3, "color": "#ef4444"},
+            ],
+        },
+    )
+
+
+def _graph_fallback_scene(session: StudentSession) -> SceneScript:
     concept_id = session.metadata.get("concept_id", "two-sum-hashmap")
+    node = get_concept_node(concept_id)
+    topic = session.active_topic or node.title
+    x_label = "Input / Cause"
+    y_label = "Output / Effect"
+    if "price" in topic.lower() or "demand" in topic.lower() or "supply" in topic.lower():
+        x_label = "Quantity"
+        y_label = "Price"
+    elif "force" in topic.lower() or "acceleration" in topic.lower():
+        x_label = "Force (N)"
+        y_label = "Acceleration (m/s²)"
+    elif "time" in topic.lower() or "distance" in topic.lower():
+        x_label = "Time"
+        y_label = "Distance"
+
+    return SceneScript(
+        renderer="graph",
+        background="grid",
+        problem=f"Visualize the core relationship in {topic}.",
+        goal="Watch the curve move from the starting state to the outcome.",
+        takeaway=f"The key insight of {topic} is the relationship between {x_label.lower()} and {y_label.lower()}.",
+        actors=[
+            SceneActor(id="x-axis", kind="arrow", label=x_label, icon="", x=50, y=90),
+            SceneActor(id="y-axis", kind="arrow", label=y_label, icon="", x=12, y=50),
+            SceneActor(id="line-before", kind="node", label="Before", icon="🔵", x=25, y=65),
+            SceneActor(id="line-after", kind="node", label="After", icon="🔴", x=65, y=35),
+        ],
+        steps=[
+            SceneStep(
+                id="s0",
+                caption=f"Starting state: {topic} at baseline.",
+                narration=f"We observe {topic} from its initial conditions.",
+                effects=[
+                    SceneEffect(actor="x-axis", action="appear"),
+                    SceneEffect(actor="y-axis", action="appear"),
+                    SceneEffect(actor="line-before", action="appear"),
+                ],
+            ),
+            SceneStep(
+                id="s1",
+                caption=f"A change occurs in {topic}.",
+                narration=f"The key mechanism shifts the relationship between {x_label.lower()} and {y_label.lower()}.",
+                effects=[
+                    SceneEffect(actor="line-after", action="appear"),
+                    SceneEffect(actor="line-before", action="dim"),
+                    SceneEffect(actor="line-after", action="highlight"),
+                ],
+            ),
+            SceneStep(
+                id="s2",
+                caption=f"Result: {topic} resolves at a new state.",
+                narration=f"The final outcome shows how {topic} adapts and stabilizes.",
+                effects=[
+                    SceneEffect(actor="line-after", action="pulse"),
+                ],
+            ),
+        ],
+        graph_data={
+            "x_axis": x_label,
+            "y_axis": y_label,
+            "x_range": [0, 100],
+            "y_range": [0, 100],
+            "curves": [
+                {
+                    "id": "line-before",
+                    "type": "line",
+                    "label": "Before",
+                    "points": [[10, 70], [30, 60], [50, 50], [70, 40]],
+                    "color": "#1cb0f6",
+                    "visible_from_step": 0,
+                    "visible_to_step": 1,
+                },
+                {
+                    "id": "line-after",
+                    "type": "line",
+                    "label": "After",
+                    "points": [[10, 40], [30, 35], [50, 30], [70, 20]],
+                    "color": "#ef4444",
+                    "visible_from_step": 1,
+                },
+            ],
+            "equilibria": [],
+            "annotations": [
+                {"text": "Change", "x": 45, "y": 55, "step": 1, "color": "#f59e0b"},
+            ],
+        },
+    )
+
+
+def _diagram_fallback_scene(session: StudentSession) -> SceneScript:
+    concept_id = session.metadata.get("concept_id", "two-sum-hashmap")
+    node = get_concept_node(concept_id)
+    topic = session.active_topic or node.title
+    words = topic.replace("&", "and").split()[:3]
+    safe = [w.strip(",.:;") for w in words if w.strip(",.:;")]
+    a = safe[0] if safe else "Part A"
+    b = safe[1] if len(safe) > 1 else "Part B"
+    c = safe[2] if len(safe) > 2 else "Result"
+
+    return SceneScript(
+        renderer="diagram",
+        background="lab",
+        problem=f"Understand the structure of {topic}.",
+        goal="Watch how the parts connect and produce the whole.",
+        takeaway=f"{topic} is a system of connected parts: {a}, {b}, and {c}.",
+        actors=[
+            SceneActor(id="a", kind="node", label=a, icon="🔵", x=25, y=40),
+            SceneActor(id="b", kind="node", label=b, icon="🟢", x=50, y=40),
+            SceneActor(id="c", kind="node", label=c, icon="🔴", x=75, y=40),
+        ],
+        steps=[
+            SceneStep(
+                id="s0",
+                caption=f"Parts of {topic}: {a}, {b}, {c}.",
+                narration="Every system is made of connected components.",
+                effects=[
+                    SceneEffect(actor="a", action="appear"),
+                    SceneEffect(actor="b", action="appear"),
+                    SceneEffect(actor="c", action="appear"),
+                ],
+            ),
+            SceneStep(
+                id="s1",
+                caption=f"{a} connects to {b}, which connects to {c}.",
+                narration=f"The mechanism of {topic} flows through these connections.",
+                effects=[
+                    SceneEffect(actor="a", action="connect", target="b"),
+                    SceneEffect(actor="b", action="connect", target="c"),
+                ],
+            ),
+            SceneStep(
+                id="s2",
+                caption=f"Together they form {topic}.",
+                narration=f"This is the complete structure: every part has a role.",
+                effects=[
+                    SceneEffect(actor="a", action="pulse"),
+                    SceneEffect(actor="b", action="pulse"),
+                    SceneEffect(actor="c", action="pulse"),
+                ],
+            ),
+        ],
+    )
+
+
+def _image_overlay_fallback_scene(session: StudentSession) -> SceneScript:
+    concept_id = session.metadata.get("concept_id", "two-sum-hashmap")
+    node = get_concept_node(concept_id)
+    topic = session.active_topic or node.title
+    return SceneScript(
+        renderer="image-overlay",
+        background="default",
+        problem=f"Explore {topic} with labeled annotations.",
+        goal="Watch each label appear and explain a key feature.",
+        takeaway=f"Key features of {topic} are shown and explained step by step.",
+        actors=[
+            SceneActor(id="lbl-1", kind="chip", label="Feature 1", icon="🏷️", x=30, y=30),
+            SceneActor(id="lbl-2", kind="chip", label="Feature 2", icon="🏷️", x=60, y=50),
+            SceneActor(id="lbl-3", kind="chip", label="Feature 3", icon="🏷️", x=40, y=70),
+        ],
+        steps=[
+            SceneStep(
+                id="s0",
+                caption=f"Overview of {topic}.",
+                narration="We'll annotate the key features one by one.",
+                effects=[
+                    SceneEffect(actor="lbl-1", action="appear"),
+                ],
+            ),
+            SceneStep(
+                id="s1",
+                caption="Second feature appears.",
+                narration="Each annotation highlights a specific mechanism.",
+                effects=[
+                    SceneEffect(actor="lbl-2", action="appear"),
+                    SceneEffect(actor="lbl-1", action="highlight"),
+                ],
+            ),
+            SceneStep(
+                id="s2",
+                caption="Third feature completes the picture.",
+                narration="All features together explain the whole concept.",
+                effects=[
+                    SceneEffect(actor="lbl-3", action="appear"),
+                    SceneEffect(actor="lbl-2", action="highlight"),
+                    SceneEffect(actor="lbl-3", action="highlight"),
+                ],
+            ),
+        ],
+    )
+
+
+def _fallback_scene(session: StudentSession, naive: bool = False, renderer: str = "emoji-scene") -> SceneScript:
+    """Deterministic scenes: hand-crafted for two-sum, renderer-aware fallbacks otherwise."""
+    concept_id = session.metadata.get("concept_id", "two-sum-hashmap")
+    topic = (session.active_topic or "").lower()
+    if concept_id == "two-sum-hashmap":
+        return _two_sum_scene(naive)
+
+    if renderer == "graph":
+        return _graph_fallback_scene(session)
+    if renderer == "diagram":
+        return _diagram_fallback_scene(session)
+    if renderer == "image-overlay":
+        return _image_overlay_fallback_scene(session)
+
+    if any(k in topic for k in ["supply", "demand", "economics", "market", "price"]):
+        return _supply_demand_scene()
+
     brief = get_topic_brief(concept_id)
     if brief and brief.example_values:
         tokens = [str(t)[:10] for t in brief.example_values[:5]]
-        bg = "nature"
+        problem = f"Understand how {brief.title} actually works, one stage at a time."
+        goal = "Watch each stage appear in order and connect to the next — the mechanism is the sequence, not any single box."
+        takeaway = brief.example_walkthrough.split(".")[0] if brief.example_walkthrough else "Each stage feeds the next — that chain is the mechanism."
     else:
-        tokens = ["2", "7", "11", "15"]
-        bg = "grid"
+        tokens = ["start", "change", "result"]
+        problem = f"See how {session.active_topic} unfolds, stage by stage."
+        goal = "Watch the sequence: each stage sets up the next one."
+        takeaway = "The final stage is the outcome of the whole chain."
 
     n = len(tokens)
-    x0 = max(14.0, 50 - (n - 1) * 9)
+    x0 = max(16.0, 50 - (n - 1) * 11)
     actors = [
-        SceneActor(id=f"box-{i}", kind="box", label=t, x=x0 + i * 18, y=30)
+        SceneActor(id=f"stage-{i}", kind="box", label=t, icon="", x=x0 + i * 22, y=42)
         for i, t in enumerate(tokens)
     ]
-    actors.append(SceneActor(id="scanner", kind="arrow", label="scan", icon="👇", x=x0, y=50))
-    if naive:
-        actors.append(SceneActor(id="pairs", kind="counter", label="pairs tried", icon="🔁", value=0, x=50, y=76))
-    else:
-        actors.append(SceneActor(id="memory", kind="node", label="seen so far", icon="🧠", x=18, y=76))
-        actors.append(SceneActor(id="result", kind="counter", label="progress", icon="✅", value=0, x=82, y=76))
-
+    actors.append(SceneActor(id="flow", kind="arrow", label="next", icon="👉", x=x0, y=66))
     steps: list[SceneStep] = [
         SceneStep(
-            id="s0",
-            caption="Here comes the input." if not naive else "Watch the naive approach grind through the input.",
-            effects=[SceneEffect(actor=f"box-{i}", action="appear") for i in range(n)]
-            + [SceneEffect(actor="scanner", action="appear")],
+            id="s0", caption=problem,
+            narration=goal,
+            effects=[SceneEffect(actor=f"stage-{i}", action="appear") for i in range(n)]
+            + [SceneEffect(actor="flow", action="appear")],
         )
     ]
-    for i, t in enumerate(tokens):
-        effects = [SceneEffect(actor="scanner", action="move", to_x=x0 + i * 18, to_y=50)]
-        if naive:
-            effects.append(SceneEffect(actor="pairs", action="increment", value=i + 1))
-            cap = f"Comparing {t} with every other value — work piles up."
-        else:
-            effects.append(SceneEffect(actor="memory", action="pulse", label=t))
-            effects.append(SceneEffect(actor="result", action="increment", value=i + 1))
-            cap = f"Handle {t} in one quick step and remember it."
-        steps.append(SceneStep(id=f"s{i + 1}", caption=cap, effects=effects))
+    for i in range(n):
+        steps.append(SceneStep(
+            id=f"s{i + 1}",
+            caption=f"Stage {i + 1}: {tokens[i]}" + (" — the starting point." if i == 0 else " builds on what came before."),
+            narration=(
+                "Each stage exists because the previous one produced something this stage needs. "
+                "If you can say what each stage hands to the next one, you understand the mechanism."
+                if i > 0 else
+                "Everything that follows depends on this initial state."
+            ),
+            effects=[SceneEffect(actor="flow", action="move", to_x=x0 + i * 22, to_y=66),
+                     SceneEffect(actor=f"stage-{i}", action="pulse")],
+        ))
     steps.append(SceneStep(
-        id=f"s{n + 1}",
-        caption="Done — notice how much work each approach needed." if not naive else "Finally done. That was slow.",
-        effects=[SceneEffect(actor="scanner", action="dim")],
+        id=f"s{n + 1}", caption=takeaway,
+        narration="That is the whole story: a chain of cause and effect, not a list of isolated facts.",
+        effects=[SceneEffect(actor=f"stage-{n - 1}", action="highlight")],
     ))
-    return SceneScript(background=bg, actors=actors, steps=steps)
+    return SceneScript(
+        background="nature" if brief else "default",
+        problem=problem, goal=goal, takeaway=takeaway,
+        actors=actors, steps=steps,
+    )
 
 
-def _visualization_fallback(session: StudentSession) -> VisualizationSpec:
+def _visualization_fallback(session: StudentSession, renderer: str = "emoji-scene") -> VisualizationSpec:
     concept_id = session.metadata.get("concept_id", "two-sum-hashmap")
     node = get_concept_node(concept_id)
 
-    # Determine type
     vis_type = "comparison"
 
-    # Dynamic states based on concept prerequisites and title
     states = [
         VisualizationState(
             id="before",
-            labels=[f"Start: {node.title} input is loaded."],
+            labels=[f"Start: {node.title} initial state."],
             highlight=["input"]
         ),
         VisualizationState(
             id="step-1",
-            labels=[f"Stepping through optimized approach: scanning element/node."],
+            labels=[f"Key mechanism in action."],
             highlight=["optimized"]
         ),
         VisualizationState(
             id="conclusion",
-            labels=[f"Conclusion: Optimized approach resolved successfully."],
+            labels=[f"Result: {node.title} resolved."],
             highlight=["conclusion"]
         )
     ]
@@ -670,7 +1206,7 @@ def _visualization_fallback(session: StudentSession) -> VisualizationSpec:
         layout={"orientation": "left-right"},
         entities=[
             VisualizationEntity(id="input", kind="array", label="input values"),
-            VisualizationEntity(id="optimized", kind="node", label="optimized process"),
+            VisualizationEntity(id="optimized", kind="node", label="core process"),
             VisualizationEntity(id="conclusion", kind="node", label="result"),
         ],
         relations=[],
@@ -682,12 +1218,13 @@ def _visualization_fallback(session: StudentSession) -> VisualizationSpec:
         questions=[
             VisualizationQuestion(
                 id="q1",
-                prompt=f"What is the time complexity of the optimized approach?",
-                expectedObservations=["O(N)"]
+                prompt=f"What is the key mechanism in {node.title}?",
+                expectedObservations=["The core transformation or relationship"]
             )
         ],
         expectedObservations=[],
-        scene=_fallback_scene(session, naive=False),
+        renderer=renderer,
+        scene=_fallback_scene(session, naive=False, renderer=renderer),
     )
 
 
@@ -779,69 +1316,57 @@ def visualization_agent_real(session: StudentSession) -> VisualizationSpec:
         return _visualization_fallback(session)
 
     concept_id = session.metadata.get("concept_id", "two-sum-hashmap")
-
-    # Define standard examples for each concept
-    examples = {
-        "two-sum-hashmap": "nums=[2,7,11,15], target=9",
-        "contains-duplicate": "nums=[1,2,3,1]",
-        "valid-anagram": "s='anagram', t='nagaram'",
-        "best-time-stock": "prices=[7,1,5,3,6,4]",
-        "max-subarray": "nums=[-2,1,-3,4,-1,2,1,-5,4]",
-        "valid-parentheses": "s='([]){}'",
-        "reverse-linked-list": "head=[1,2,3,4,5]",
-        "group-anagrams": "strs=['eat','tea','tan','ate','nat','bat']",
-        "product-except-self": "nums=[1,2,3,4]",
-        "top-k-frequent": "nums=[1,1,1,2,2,3], k=2",
-        "longest-consecutive": "nums=[100,4,200,1,3,2]"
-    }
     brief = get_topic_brief(concept_id)
-    if brief:
-        example_str = (
-            f"input/state: {brief.input_display or brief.title}. "
-            f"Concrete example to animate step by step: {brief.example_walkthrough}"
-        )
-        type_rule = (
-            "  1. type must be one of 'process', 'timeline', 'flow', or 'comparison' — choose whichever best "
-            "matches how this topic's example unfolds (a repeating transformation -> 'process'; a historical or "
-            "sequential development -> 'timeline').\n"
-            "  2. entities: represent the example's stages, actors, or components as entities (kind: 'node' for "
-            "stages, 'array' for ordered values, 'metric' for quantities, 'flow' for processes).\n"
-        )
-    else:
-        example_str = examples.get(concept_id, "nums=[2,7,11,15], target=9")
-        type_rule = (
-            "  1. type must be exactly 'comparison', 'stack', or 'linked-list' (use 'stack' ONLY if validating brackets/parentheses, use 'linked-list' ONLY if reversing a linked list).\n"
-            "  2. entities: include relevant visualization entities representing arrays, strings, stacks, hash-maps, links, nodes, edges, or metrics as appropriate.\n"
-        )
+    example_str = (
+        f"input/state: {brief.input_display or brief.title}. "
+        f"Concrete example to animate step by step: {brief.example_walkthrough}"
+    ) if brief else "nums=[2,7,11,15], target=9"
+
+    # Classify topic into a renderer type
+    classifier = _visualization_classifier(concept.title, concept.canonical_definition)
+    renderer = classifier.renderer
+    LOGGER.info("VisualizationClassifier: topic='%s' -> renderer='%s' (%s)", concept.title, renderer, classifier.reasoning)
+
+    scene_rules = _scene_rules("4 to 7 steps", renderer=renderer)
 
     system_prompt = (
         "You are a visualization-design agent for an adaptive learning system. "
-        "You produce ONLY a VisualizationSpec JSON that drives a CSS-animated comparison UI.\n"
-        f"For the concept '{concept.title}', create a step-by-step visualization spec matching the problem dynamics.\n"
+        "You produce ONLY a VisualizationSpec JSON that drives a renderer-aware visualization UI.\n"
+        f"For the concept '{concept.title}', create a step-by-step visualization spec.\n"
         "Rules:\n"
-        + type_rule +
-        "  3. states: produce exactly 3 to 5 states (e.g. 'before', 'step-1', 'step-2', 'conclusion') explaining the process. "
-        "     Each state has a 'labels' list (1-3 strings) and a 'highlight' list referencing entity ids.\n"
-        "  4. transitions: link states sequentially with appropriate animations.\n"
-        "  5. questions: exactly 2 to 3 questions covering time complexity, space complexity, and common misconceptions.\n"
-        f"  6. Ground the example values in: {example_str}.\n"
-        "  7. Do not add fields beyond the schema — but you MUST fill the 'scene' field, which IS part of the schema.\n"
-        + _scene_rules("4 to 7 steps")
+        f"  1. renderer must be exactly '{renderer}'. "
+        "This is already chosen by a classifier — do NOT override it.\n"
+        "  2. type must be one of: 'process', 'timeline', 'flow', 'comparison'. Choose the best fit.\n"
+        "  3. entities: represent the example's stages, actors, or components as entities (kind: 'node' for stages, 'array' for ordered values, 'metric' for quantities, 'flow' for processes).\n"
+        "  4. states: produce exactly 3 to 5 states explaining the process. Each state has 'labels' and 'highlight'.\n"
+        "  5. transitions: link states sequentially with appropriate animations.\n"
+        "  6. questions: exactly 2 to 3 questions covering key intuitions and common misconceptions for THIS specific topic.\n"
+        f"  7. Ground the example values in: {example_str}.\n"
+        "  8. Do not add fields beyond the schema — but you MUST fill the 'scene' field, which IS part of the schema.\n"
+        + scene_rules
     )
 
     user_prompt = json.dumps({
-        "concept": concept.model_dump(),
-        "diagnostic_report": diagnosis.model_dump() if diagnosis else {},
+        "concept": {
+            "title": concept.title,
+            "canonical_definition": concept.canonical_definition,
+            "key_facts": concept.key_facts,
+            "teaching_emphasis": concept.teaching_emphasis,
+            "deep_mechanism": concept.deep_mechanism,
+            "narrative_intuition": concept.narrative_intuition,
+        },
+        "student_misconceptions": (diagnosis.misconceptions if diagnosis else []),
+        "chosen_renderer": renderer,
         "output_type": "VisualizationSpec",
-        "topic": concept.title,
         "example": example_str,
         "instruction": (
-            f"Produce a VisualizationSpec JSON (including its full 'scene' script) that animates the core mechanism of '{concept.title}' "
-            f"step by step. Use the example: {example_str}. "
+            f"Produce a VisualizationSpec JSON with renderer='{renderer}' and a full 'scene' script. "
+            f"Animate the core mechanism of '{concept.title}' step by step. Use the example: {example_str}. "
             "The scene must: (1) Open with a caption stating what problem we're solving and what the input is. "
             "(2) Show each key step with meaningful captions explaining WHAT is happening and WHY. "
             "(3) Close with the concrete answer/result. "
-            "Tailor state labels to correct the student's misconceptions listed in diagnostic_report."
+            "Correct the student's misconceptions in step narrations where relevant. "
+            f"Because renderer='{renderer}', follow its schema EXACTLY as described in the system prompt."
         ),
     })
 
@@ -850,17 +1375,23 @@ def visualization_agent_real(session: StudentSession) -> VisualizationSpec:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_model=VisualizationSpec,
-            fallback=lambda: _visualization_fallback(session),
+            fallback=lambda: _visualization_fallback(session, renderer=renderer),
         )
         if concept_id == "two-sum-hashmap":
             spec = _guard_visualization_spec(spec, diagnosis)
+
+        # Force the classifier's renderer into the spec so frontend dispatches correctly
+        spec.renderer = renderer
         if spec.scene is None or not spec.scene.steps:
-            spec.scene = _fallback_scene(session, naive=False)
-        log_agent_call(session, "VisualizationAgent", {"llm_spec_id": spec.id, "states": len(spec.states)})
+            spec.scene = _fallback_scene(session, naive=False, renderer=renderer)
+        elif spec.scene and spec.scene.renderer != renderer:
+            spec.scene.renderer = renderer
+
+        log_agent_call(session, "VisualizationAgent", {"llm_spec_id": spec.id, "renderer": renderer, "states": len(spec.states)})
         return spec
     except Exception as exc:
         LOGGER.warning("VisualizationAgent LLM call failed: %s; using fallback", exc)
-        fallback = _visualization_fallback(session)
+        fallback = _visualization_fallback(session, renderer=renderer)
         log_agent_call(session, "VisualizationAgent", {"fallback_used": True})
         return fallback
 
@@ -915,9 +1446,15 @@ def visualization_agent_bf_real(session: StudentSession) -> VisualizationSpec:
     )
 
     user_prompt = json.dumps({
-        "concept": concept.model_dump(),
-        "diagnostic_report": diagnosis.model_dump() if diagnosis else {},
+        "concept": {
+            "title": concept.title,
+            "canonical_definition": concept.canonical_definition,
+            "key_facts": concept.key_facts,
+            "method_summaries": [f"{m.name} — {m.complexity.get('time', 'n/a')} time" for m in (concept.methods or [])],
+        },
+        "student_misconceptions": (diagnosis.misconceptions if diagnosis else []),
         "output_type": "VisualizationSpec",
+        "example": example_str,
         "instruction": (
             f"Produce a VisualizationSpec JSON (including its full 'scene' script) for the brute-force or "
             f"naive explanation of {concept.title}."

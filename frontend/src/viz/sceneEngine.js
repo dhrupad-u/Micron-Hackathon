@@ -44,8 +44,16 @@ export function computeSceneState(scene, stepIndex) {
       const t = e.target ? state.get(e.target) : null;
       switch (e.action) {
         case 'appear':
-          if (a) a.visible = true;
-          if (t) t.visible = true;
+          if (a) {
+            a.visible = true;
+            if (e.label != null) a.label = String(e.label);
+            if (e.value != null) a.value = e.value;
+          }
+          if (t) {
+            t.visible = true;
+            if (e.label != null) t.label = String(e.label);
+            if (e.value != null) t.value = e.value;
+          }
           break;
         case 'disappear':
           if (a) a.visible = false;
@@ -128,4 +136,8 @@ export function sceneLength(scene) {
 
 export function captionAt(scene, i) {
   return scene && scene.steps && scene.steps[i] ? scene.steps[i].caption || '' : '';
+}
+
+export function narrationAt(scene, i) {
+  return scene && scene.steps && scene.steps[i] ? scene.steps[i].narration || '' : '';
 }

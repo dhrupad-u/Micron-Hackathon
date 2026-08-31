@@ -1,21 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Play, Pause, SkipBack, SkipForward, RotateCcw, ArrowRight, Target, Info, Eye } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Play, Pause, SkipBack, SkipForward, RotateCcw, ArrowRight, Target, Eye } from 'lucide-react';
 import ScenePlayer from '../viz/ScenePlayer.jsx';
-import { captionAt, sceneLength } from '../viz/sceneEngine.js';
+import GraphRenderer from '../viz/GraphRenderer.jsx';
+import DiagramRenderer from '../viz/DiagramRenderer.jsx';
+import { captionAt, narrationAt, sceneLength } from '../viz/sceneEngine.js';
 import { Mascot } from '../components/ui.jsx';
 import { api } from '../api.js';
-
-function predictOptions(scene, atStep) {
-  const captions = (scene?.steps || []).map((s) => s.caption || '');
-  const correct = captions[atStep + 1];
-  if (!correct) return null;
-  const others = captions
-    .map((c, i) => ({ c, i }))
-    .filter(({ c, i }) => c && i !== atStep + 1 && c !== correct);
-  const pool = others.sort(() => Math.random() - 0.5).slice(0, 2).map(({ c }) => c);
-  const opts = [...pool, correct].sort(() => Math.random() - 0.5);
-  return { options: opts, correct };
-}
 
 export default function Visualizer({ token, session, round, adaptNote, onContinue, onError }) {
   const concept = session.concept_history?.[0];
@@ -24,8 +14,8 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
   const optSpec = session.interaction_state?.current_visualization;
   const bfSpec = session.interaction_state?.current_visualization_bf;
 
-  // Show duel ONLY when we have two distinct valid visualization specs
-  const duel = bfSpec?.scene?.steps?.length > 0 && optSpec?.scene?.steps?.length > 0;
+  // Two stages ONLY when this lesson genuinely compares two approaches (curated DSA).
+  const duel = !isCustom && !!bfSpec?.scene?.steps?.length && !!optSpec?.scene?.steps?.length;
 
   const methods = concept?.methods || [];
   const naiveMethod = methods.find((m) => /brute|naive|approach-1|basic/i.test(m.id + m.name)) || methods[0];
@@ -36,14 +26,12 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
   const [stepIndex, setStepIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [predict, setPredict] = useState(null);
-  const [predictDone, setPredictDone] = useState(false);
   const [checkpoint, setCheckpoint] = useState(false);
   const [answers, setAnswers] = useState({});
   const [saved, setSaved] = useState(false);
-  const predictFired = useRef(false);
 
   const mainScene = optSpec?.scene;
+  const renderer = mainScene?.renderer || optSpec?.renderer || 'emoji-scene';
   const total = Math.max(sceneLength(mainScene), duel ? sceneLength(bfSpec?.scene) : 0, 1);
   const atEnd = stepIndex >= total - 1;
 
@@ -54,7 +42,7 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
 
   // Playback ticker
   useEffect(() => {
-    if (!playing || predict) return;
+    if (!playing) return;
     const t = setTimeout(() => {
       setStepIndex((i) => {
         const next = i + 1;
@@ -64,32 +52,13 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
         }
         return next;
       });
-    }, 2400 / speed);
+    }, 2600 / speed);
     return () => clearTimeout(t);
-  }, [playing, stepIndex, speed, predict, total]);
-
-  // Fire predict moment
-  useEffect(() => {
-    if (!playing || predictFired.current || total < 4 || stepIndex !== Math.floor(total / 2) - 1) return;
-    const p = predictOptions(mainScene, stepIndex);
-    if (p) {
-      predictFired.current = true;
-      setPredict({ ...p, picked: null });
-    }
-  }, [playing, stepIndex, total, mainScene]);
+  }, [playing, stepIndex, speed, total]);
 
   useEffect(() => {
     if (atEnd && !playing) setCheckpoint(true);
   }, [atEnd, playing]);
-
-  function pickPredict(opt) {
-    if (predict.picked != null) return;
-    setPredict({ ...predict, picked: opt });
-    setTimeout(() => {
-      setPredict(null);
-      setPredictDone(true);
-    }, 1600);
-  }
 
   async function submitCheckpoint() {
     try {
@@ -105,9 +74,13 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
   }
 
   const inputDisplay = brief?.input_display || concept?.title || session.active_topic;
-  const targetWalkthrough = brief?.example_walkthrough || concept?.canonical_definition;
+  const sceneProblem = mainScene?.problem || `We're modeling: ${inputDisplay}`;
+  const sceneGoal = mainScene?.goal || 'Watch each step and ask yourself what changed — and why it had to.';
+  const sceneTakeaway = mainScene?.takeaway || '';
   const actors = mainScene?.actors || [];
-  const currentStepCaption = captionAt(mainScene, Math.min(stepIndex, sceneLength(mainScene) - 1));
+  const captionIdx = Math.min(stepIndex, sceneLength(mainScene) - 1);
+  const currentStepCaption = captionAt(mainScene, captionIdx);
+  const currentNarration = narrationAt(mainScene, captionIdx);
 
   return (
     <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 960, margin: '0 auto' }}>
@@ -128,20 +101,20 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
         </div>
       )}
 
-      {/* Problem & Target Context Card */}
+      {/* Problem & Goal framing — always visible so the animation has context */}
       <div className="card" style={{ padding: 20, background: 'var(--blue-soft)', border: '2px solid var(--blue)', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 900, fontSize: 16, color: 'var(--ink)' }}>
           <Target size={18} color="var(--blue)" />
-          <span>What We Are Modeling & Solving</span>
+          <span>What this animation shows</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, fontSize: 14, fontWeight: 700 }}>
           <div style={{ background: '#fff', padding: '10px 14px', borderRadius: 12, border: '1px solid rgba(0,0,0,0.06)' }}>
-            <span style={{ color: 'var(--ink-mid)', fontSize: 12, textTransform: 'uppercase', display: 'block' }}>Initial Input / System State</span>
-            <span style={{ color: 'var(--ink)', fontSize: 14.5 }}>{inputDisplay}</span>
+            <span style={{ color: 'var(--ink-mid)', fontSize: 12, textTransform: 'uppercase', display: 'block', marginBottom: 2 }}>The problem</span>
+            <span style={{ color: 'var(--ink)', fontSize: 14.5 }}>{sceneProblem}</span>
           </div>
           <div style={{ background: '#fff', padding: '10px 14px', borderRadius: 12, border: '1px solid rgba(0,0,0,0.06)' }}>
-            <span style={{ color: 'var(--ink-mid)', fontSize: 12, textTransform: 'uppercase', display: 'block' }}>Goal & Expected Outcome</span>
-            <span style={{ color: 'var(--ink)', fontSize: 14.5 }}>{targetWalkthrough ? targetWalkthrough.slice(0, 110) + '...' : 'Reach verified solution'}</span>
+            <span style={{ color: 'var(--ink-mid)', fontSize: 12, textTransform: 'uppercase', display: 'block', marginBottom: 2 }}>Watch for</span>
+            <span style={{ color: 'var(--ink)', fontSize: 14.5 }}>{sceneGoal}</span>
           </div>
         </div>
       </div>
@@ -168,20 +141,38 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
         </div>
       ) : (
         <div style={{ border: '3px solid rgba(0,0,0,0.1)', borderRadius: 20, overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.06)' }}>
-          <ScenePlayer scene={mainScene} stepIndex={stepIndex} />
+          {renderer === 'graph' ? (
+            <GraphRenderer scene={mainScene} stepIndex={Math.min(stepIndex, sceneLength(mainScene) - 1)} />
+          ) : renderer === 'diagram' ? (
+            <DiagramRenderer scene={mainScene} stepIndex={Math.min(stepIndex, sceneLength(mainScene) - 1)} />
+          ) : (
+            <ScenePlayer scene={mainScene} stepIndex={stepIndex} />
+          )}
         </div>
       )}
 
-      {/* Active Step Breakdown Panel */}
+      {/* Active Step Breakdown Panel: headline + the WHY */}
       <div className="card" style={{ padding: 18, borderLeft: '6px solid var(--yellow)', display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span className="pill yellow" style={{ fontWeight: 900 }}>Step {Math.min(stepIndex + 1, total)} of {total}</span>
-          <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-mid)' }}>Active State Breakdown</span>
+          <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-mid)' }}>what's happening · and why</span>
         </div>
         <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--ink)', lineHeight: 1.5 }}>
           {currentStepCaption || 'Press Play to start the step-by-step transformation.'}
         </div>
+        {currentNarration && (
+          <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--ink-mid)', lineHeight: 1.6 }}>
+            {currentNarration}
+          </div>
+        )}
       </div>
+
+      {/* Takeaway banner once the animation completes */}
+      {atEnd && sceneTakeaway && (
+        <div className="card fade-in" style={{ padding: 16, background: 'var(--green-soft)', border: '2px solid var(--green)', fontWeight: 800, fontSize: 15 }}>
+          🎯 {sceneTakeaway}
+        </div>
+      )}
 
       {/* Controls */}
       <div className="player-ctrls" style={{ background: '#fff', padding: 14, borderRadius: 18, border: '1px solid rgba(0,0,0,0.08)' }}>
@@ -229,35 +220,8 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
         </div>
       </div>
 
-      {/* Predict overlay */}
-      {predict && (
-        <div className="card fade-in" style={{ border: '2px solid var(--yellow)', background: 'var(--yellow-soft)', padding: 20 }}>
-          <div style={{ fontWeight: 900, fontSize: 17, marginBottom: 4 }}>🔮 Predict! What happens next?</div>
-          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--ink-mid)', marginBottom: 12 }}>
-            Just a gut check — no grading here.
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {predict.options.map((opt, i) => {
-              const isPick = predict.picked === opt;
-              const isRight = opt === predict.correct;
-              const cls = predict.picked == null ? 'choice' : isRight ? 'choice right' : isPick ? 'choice wrong' : 'choice';
-              return (
-                <button key={i} className={cls} disabled={predict.picked != null} onClick={() => pickPredict(opt)}>
-                  <span className="key">{'123'[i]}</span> {opt}
-                </button>
-              );
-            })}
-          </div>
-          {predict.picked != null && (
-            <div style={{ marginTop: 10, fontWeight: 900, fontSize: 14 }}>
-              {predict.picked === predict.correct ? '✅ Exactly right — watch it play out!' : '👀 Interesting guess — watch closely now…'}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Checkpoint after playback */}
-      {checkpoint && !predict && (
+      {checkpoint && (
         <div className="card fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 22 }}>
           <div style={{ fontWeight: 900, fontSize: 18 }}>🏁 Checkpoint — Confirm Your Understanding</div>
           {checkpointQuestions.map((q, i) => (
@@ -298,9 +262,9 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
         session={session}
         screen="visualizer"
         text={
-          predictDone
-            ? 'Nice — your predictions match the step-by-step transformation!'
-            : 'Press play to watch the system transform step by step. Have questions about an element? Tap my bubble!'
+          atEnd
+            ? 'That was the whole mechanism! Lock in the checkpoint answers, or ask me anything about a step you missed.'
+            : 'Press play and follow the highlighted actor each step. Curious what something on stage means? Tap my bubble!'
         }
       />
     </div>
@@ -308,11 +272,18 @@ export default function Visualizer({ token, session, round, adaptNote, onContinu
 }
 
 function StagePanel({ badge, color, soft, scene, stepIndex }) {
+  const renderer = scene?.renderer || 'emoji-scene';
   return (
     <div className="stage-wrap" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <span className="pill" style={{ background: soft, color, alignSelf: 'flex-start', fontWeight: 900 }}>{badge}</span>
       <div style={{ border: '2px solid rgba(0,0,0,0.08)', borderRadius: 16, overflow: 'hidden' }}>
-        <ScenePlayer scene={scene} stepIndex={stepIndex} />
+        {renderer === 'graph' ? (
+          <GraphRenderer scene={scene} stepIndex={stepIndex} />
+        ) : renderer === 'diagram' ? (
+          <DiagramRenderer scene={scene} stepIndex={stepIndex} />
+        ) : (
+          <ScenePlayer scene={scene} stepIndex={stepIndex} />
+        )}
       </div>
     </div>
   );
